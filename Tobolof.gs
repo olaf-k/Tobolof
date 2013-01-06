@@ -1,0 +1,271 @@
+/**
+ * @fileoverview A simple Google App Script to monitor Twitter followers
+ * @version 1.0
+ * @author Twitter: @olaf_k | Github: olaf-k
+ */
+
+/** 
+ * Twitter screen name (without @) to monitor
+ * @constant
+ */
+var USER = "screen_name";
+
+/** 
+ * E-mail address to which the report will be sent to
+ * @constant
+ */
+var REPORT_MAIL_ADDRESS = "address@email.com";
+
+/** 
+ * The Twitter oAuth consumer key
+ * @constant
+ */
+var CONSUMER_KEY = "";
+
+/** 
+ * The Twitter oAuth consumer secret
+ * @constant
+ */
+var CONSUMER_SECRET = "";
+
+/** 
+ * Boilerplate code for Twitter oAuth configuration
+ */
+var oauthConfig = UrlFetchApp.addOAuthService("twitter");
+oauthConfig.setAccessTokenUrl("https://api.twitter.com/oauth/access_token");
+oauthConfig.setRequestTokenUrl("https://api.twitter.com/oauth/request_token");
+oauthConfig.setAuthorizationUrl("https://api.twitter.com/oauth/authorize");
+oauthConfig.setConsumerKey(CONSUMER_KEY);
+oauthConfig.setConsumerSecret(CONSUMER_SECRET);
+
+/** 
+ * Script entry point
+ */
+function main() {
+  var db = ScriptDb.getMyDb();
+
+  // Retrieve the current list of followers ids
+  var currentlist = getFollowers(USER);
+  if (currentlist == null) {
+    errorLog("[main] getFollowers did not return a proper reply");
+    return;
+  }
+
+  // Then retrieve the stored list of followers ids, if any
+  var storedlist = db.query({
+    type : "storedlist"
+  }).next();
+
+  var newfollowers = [],
+      unfollowers  = [];
+  
+  // If we have a stored list, extract the differences with the current one
+  if (storedlist && storedlist.ids.length>0) {
+    unfollowers  = diff(storedlist.ids,  currentlist.ids);
+    newfollowers = diff(currentlist.ids, storedlist.ids);
+  }
+  // If we don't, it's probably the script's first run (or an error)
+  else {
+    newfollowers = currentlist.ids;
+  }
+  
+  var message = "",
+      newfollowersdetails = [],
+      unfollowersdetails  = [];
+  
+  if (newfollowers.length > 0) {
+    // Retrieve new followers details from Twitter
+    newfollowersdetails = getAllUsersDetails(newfollowers);
+
+    // Build the report
+    message += "<h1>List of new followers</h1>";
+    for (var i=0; i<newfollowersdetails.length; i++) {
+      message += formatUserReport({
+        img_url     : newfollowersdetails[i].profile_image_url,
+        name        : newfollowersdetails[i].name,
+        screen_name : newfollowersdetails[i].screen_name,
+        id          : newfollowersdetails[i].id
+      });
+    }
+  }
+
+  if (unfollowers.length > 0) {
+    // Retrieve unfollowers details from the db
+    var quittersdetails  = db.query({
+      type : "userdetails",
+      id : db.anyOf(unfollowers)
+    });
+
+    // If possible, retrieve updated name and pic from Twitter
+    var updateddetails = getUsersDetails(unfollowers);
+    if (updateddetails == null) {
+      errorLog("[main] getUsersDetails did not return a proper reply");
+      return;
+    }
+    // ...and convert as map for easy access
+    updateddetails = updateddetails.reduce(function(prev, current, i, a) {
+      prev[current.id] = {
+        name : current.name,
+        profile_image_url : current.profile_image_url
+      };
+      return prev;
+    }, {});
+
+    // Build the report
+    message = "<h1>List of unfollowers</h1>";
+    while (quittersdetails.hasNext()) {
+      var q = quittersdetails.next();
+      unfollowersdetails.push(q);
+      var user = {
+        img_url     : q.profile_image_url,
+        name        : q.name,
+        screen_name : q.screen_name,
+        id          : q.id,
+        since       : q.since,
+        dead        : true
+      }
+      if (updateddetails[q.id]) {
+        user.img_url = updateddetails[q.id].profile_image_url;
+        user.name    = updateddetails[q.id].name;
+        user.dead    = false;
+      }
+      message += formatUserReport(user);
+    }
+  }
+  
+  // If there's been a change...
+  if (message.length>0) {
+    // There are new followers: save their details to the db
+    if (newfollowersdetails.length>0) db.saveBatch(newfollowersdetails, false);
+    // There are unfollowers: remove their details from the db
+    if (unfollowersdetails.length>0) db.removeBatch(unfollowersdetails, false);
+    // Update the stored list of followers (or create it if there isn't any)
+    if (storedlist) {
+      storedlist.ids = currentlist.ids;
+    }
+    else {
+      storedlist = {
+        type : "storedlist",
+        ids : currentlist.ids
+      }
+    }
+    db.save(storedlist);
+    // Send the report
+    MailApp.sendEmail(REPORT_MAIL_ADDRESS, "Twitter followers update", "", {name : "Tobolof", htmlBody : message})
+  }
+  
+}
+
+/** 
+ * Returns a (html) user description to be used in the report
+ * @param {Object} user An object containing user details
+ * @param {String} user.img_url Profile picture's URL
+ * @param {String} user.name
+ * @param {String} user.screen_name User @screen_name
+ * @param {Number} user.id
+ * @param {[String]} user.since Date at which the user has been recorded as a follower
+ * @param {[Boolean]} user.dead Indicates whether the user has been deactivated
+ * @returns {String} An HTML string
+ */
+function formatUserReport(user) {
+  var m = "";
+  m += "<div><img src='" + user.img_url + "'/> ";
+  m += user.name + " (@" + user.screen_name + " - " + user.id + ")";
+  m += (user.since ? " recorded " + user.since : "");
+  m += (user.dead  ? " [deactivated]" : "");
+  m += "</div>";
+  return m;
+}
+
+/** 
+ * Retrieves user details from Twitter as an array of db records
+ * @param {Number[]} ids An array of user ids to get details about
+ * @returns {Object[]} An array of simple custom users details (see code for properties)
+ */
+function getAllUsersDetails(ids) {
+  var today = (new Date()).toDateString(),
+      tmp = ids.slice(),
+      d = [];
+  // The verb used by getUsersDetails only accepts 100 parameters per request
+  while (tmp.length>0) {
+    var r = getUsersDetails(tmp.splice(0, 100));
+    if (r==null) {
+      errorLog("[getAllUsersDetails] getUsersDetails did not return a proper reply");
+      return;
+    }
+    d = d.concat(r.map(function(i) {
+      return {
+        type : "userdetails",
+        id : i.id,
+        name : i.name,
+        screen_name : i.screen_name,
+        profile_image_url : i.profile_image_url,
+        since : today
+      };
+    }));  
+  }
+  return d;
+}
+  
+/** 
+ * Retrieves raw user details from Twitter
+ * @param {Number[]} ids An array of user ids to get details about
+ * @returns {Object[]} An array of users details (as returned by Twitter)
+ * @see https://dev.twitter.com/docs/api/1.1/get/users/lookup
+ */
+function getUsersDetails(ids) {
+  var requestData = {
+    "method": "post",
+    "payload": "include_entities=false&user_id="+ids.join(','),
+    "oAuthServiceName": "twitter",
+    "oAuthUseToken": "always"
+  };
+  try {
+    var result = UrlFetchApp.fetch("https://api.twitter.com/1.1/users/lookup.json", requestData);
+  }
+  catch(e) {
+    // 404 means the user doesn't exist
+    return (e.message.indexOf("code 404")==-1 ? null : []);
+  }
+  return Utilities.jsonParse(result.getContentText());
+}
+
+/** 
+ * Retrieves a list of followers from Twitter
+ * @param {Number} id ID of the user we want to followers list
+ * @returns {Number[]} An array of user ids
+ * @see https://dev.twitter.com/docs/api/1.1/get/followers/ids
+ */
+function getFollowers(id) {
+  var requestData = {
+    "method": "get",
+    "oAuthServiceName": "twitter",
+    "oAuthUseToken": "always"
+  };
+  // We try/catch because UrlFetchApp raises exceptions when response code != 200... grrr
+  try {
+    var result = UrlFetchApp.fetch("https://api.twitter.com/1/followers/ids.json?cursor=-1&screen_name="+id, requestData);
+  }
+  catch(e) {
+    return null;
+  }
+  return Utilities.jsonParse(result.getContentText());
+}
+
+/** 
+ * Computes the difference between two arrays
+ * @param {Array} a1
+ * @param {Array} a2
+ * @returns {Array} An array of a1 items which are not in a2
+ */
+function diff(a1, a2) {
+  return a1.filter(function(i) {return a2.indexOf(i) < 0});
+};
+
+/** 
+ * Logs an error message - pretty useless as it is, could record errors in the db
+ * @param {String} m The error message to process
+ */
+function errorLog(m) {
+  Logger.log(m);
+}
