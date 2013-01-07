@@ -25,3 +25,9 @@ You can now optionally run the script manually for the first time by selecting t
 You can then make the script run regularly (say every 30min) by creating a time-driven trigger to run the `main` function.
 
 You can also [follow me on Twitter](https://twitter.com/olaf_k).
+
+## Todo
+
+- Add a setting to track only new followers, only unfollowers or both.
+- Don't send an e-mail on the first run.
+- Make the report a bit prettier.
