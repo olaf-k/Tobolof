@@ -17,6 +17,18 @@ var USER = "screen_name";
 var REPORT_MAIL_ADDRESS = "address@email.com";
 
 /** 
+ * Defines whether the report should list users who unfollowed you
+ * @constant
+ */
+var REPORT_UNFOLLOWERS = true;
+
+/** 
+ * Defines whether the report should list users who followed you
+ * @constant
+ */
+var REPORT_NEW_FOLLOWERS = true;
+
+/** 
  * The Twitter oAuth consumer key
  * @constant
  */
@@ -69,7 +81,8 @@ function main() {
     newfollowers = currentlist.ids;
   }
   
-  var message = "",
+  var message = new reporter(),
+      somethingToReport = false;
       newfollowersdetails = [],
       unfollowersdetails  = [];
   
@@ -78,14 +91,17 @@ function main() {
     newfollowersdetails = getAllUsersDetails(newfollowers);
 
     // Build the report
-    message += "<h1>List of new followers</h1>";
-    for (var i=0; i<newfollowersdetails.length; i++) {
-      message += formatUserReport({
-        img_url     : newfollowersdetails[i].profile_image_url,
-        name        : newfollowersdetails[i].name,
-        screen_name : newfollowersdetails[i].screen_name,
-        id          : newfollowersdetails[i].id
-      });
+    if (REPORT_NEW_FOLLOWERS) {
+      message.addTitle('New followers');
+      for (var i=0; i<newfollowersdetails.length; i++) {
+        message.addUser({
+          img_url     : newfollowersdetails[i].profile_image_url,
+          name        : newfollowersdetails[i].name,
+          screen_name : newfollowersdetails[i].screen_name,
+          id          : newfollowersdetails[i].id
+        });
+      }
+      somethingToReport = true;
     }
   }
 
@@ -112,33 +128,36 @@ function main() {
     }, {});
 
     // Build the report
-    message = "<h1>List of unfollowers</h1>";
+    if (REPORT_UNFOLLOWERS) message.addTitle('Unfollowers');
     while (quittersdetails.hasNext()) {
       var q = quittersdetails.next();
       unfollowersdetails.push(q);
-      var user = {
-        img_url     : q.profile_image_url,
-        name        : q.name,
-        screen_name : q.screen_name,
-        id          : q.id,
-        since       : q.since,
-        dead        : true
+      if (REPORT_UNFOLLOWERS) {
+        var user = {
+          img_url     : q.profile_image_url,
+          name        : q.name,
+          screen_name : q.screen_name,
+          id          : q.id,
+          since       : q.since,
+          dead        : true
+        }
+        if (updateddetails[q.id]) {
+          user.img_url = updateddetails[q.id].profile_image_url;
+          user.name    = updateddetails[q.id].name;
+          user.dead    = false;
+        }
+        message.addUser(user);
+        somethingToReport = true;
       }
-      if (updateddetails[q.id]) {
-        user.img_url = updateddetails[q.id].profile_image_url;
-        user.name    = updateddetails[q.id].name;
-        user.dead    = false;
-      }
-      message += formatUserReport(user);
     }
   }
   
   // If there's been a change...
-  if (message.length>0) {
+  if (somethingToReport) {
     // There are new followers: save their details to the db
-    if (newfollowersdetails.length>0) db.saveBatch(newfollowersdetails, false);
+    if (newfollowersdetails.length > 0) db.saveBatch(newfollowersdetails, false);
     // There are unfollowers: remove their details from the db
-    if (unfollowersdetails.length>0) db.removeBatch(unfollowersdetails, false);
+    if (unfollowersdetails.length > 0) db.removeBatch(unfollowersdetails, false);
     // Update the stored list of followers (or create it if there isn't any)
     if (storedlist) {
       storedlist.ids = currentlist.ids;
@@ -151,13 +170,47 @@ function main() {
     }
     db.save(storedlist);
     // Send the report
-    MailApp.sendEmail(REPORT_MAIL_ADDRESS, "Twitter followers update", "", {name : "Tobolof", htmlBody : message})
+    message.addTitle('You have ' + currentlist.ids.length + ' followers');
+    MailApp.sendEmail(
+      REPORT_MAIL_ADDRESS,
+      "Twitter followers update",
+      "",
+      {
+        name : "Tobolof",
+        htmlBody : message.getContent()
+      }
+    );
   }
   
 }
 
+/**
+ * @class reporter Provides methods to generate the html report
+ */
+function reporter() {
+  this._content = '<table style="font-family:arial;font-size:14px;color:#4e6f87"><tbody>';
+}
+
+/**
+ * Returns the content of the html report
+ * @returns {String} An HTML string
+ */
+reporter.prototype.getContent = function() {
+    return this._content + '</tbody></table>';
+} 
+
+/**
+ * Adds a title in the report
+ * @param {String} title
+ */
+reporter.prototype.addTitle = function(title) {
+  this._content += '<tr><th colspan="3" style="font-size:16px;text-align:left;padding:20px 0 5px">';
+  this._content += '<div style="padding:10px 0;border-top:1px #c3d4e0 solid">';
+  this._content += title + '</div></th></tr>';
+} 
+
 /** 
- * Returns a (html) user description to be used in the report
+ * Adds a user description to the report
  * @param {Object} user An object containing user details
  * @param {String} user.img_url Profile picture's URL
  * @param {String} user.name
@@ -165,16 +218,29 @@ function main() {
  * @param {Number} user.id
  * @param {[String]} user.since Date at which the user has been recorded as a follower
  * @param {[Boolean]} user.dead Indicates whether the user has been deactivated
- * @returns {String} An HTML string
  */
-function formatUserReport(user) {
-  var m = "";
-  m += "<div><img src='" + user.img_url + "'/> ";
-  m += user.name + " (@" + user.screen_name + " - " + user.id + ")";
-  m += (user.since ? " recorded " + user.since : "");
-  m += (user.dead  ? " [deactivated]" : "");
-  m += "</div>";
-  return m;
+reporter.prototype.addUser = function(user) {
+  var more = '<td></td>';
+  var color = '#000';
+
+  if (user.since) {
+    more = '<td style="font-size:12px;padding-left:15px;">recorded ' + user.since;
+    if (user.dead) {
+      color = '#a5152f';
+      more += ' <strong title="User has been deactivated" style="color:' + color + ';margin-left:10px">&#10006;</strong>';
+    }
+    else {
+      color = '#666';
+    }
+    more += '</td>';
+  }
+
+  this._content += '<tr><td><a href="https://twitter.com/' + user.screen_name + '">';
+  this._content += '<img src="' + user.img_url + '" style="border-radius:5px;margin:5px 0"></a></td>';
+  this._content += '<td><a href="https://twitter.com/' + user.screen_name + '" style="text-decoration:none">';
+  this._content += '<strong style="color:' + color + '">' + user.name + '</strong>';
+  this._content += '<span title="' + user.id + '" style="font-size:12px;color:#666"> @' + user.screen_name + '</span></a></td>';
+  this._content += more + '</tr>';
 }
 
 /** 
