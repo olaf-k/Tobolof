@@ -28,6 +28,7 @@ You can also [follow me on Twitter](https://twitter.com/olaf_k).
 
 ## Todo
 
-- Add a setting to track only new followers, only unfollowers or both.
+- ~~Add a setting to track only new followers, only unfollowers or both.~~
 - Don't send an e-mail on the first run.
-- Make the report a bit prettier.
+- ~~Make the report a bit prettier.~~
+- Make a more detailed HowTo.
