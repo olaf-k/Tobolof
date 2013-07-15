@@ -310,7 +310,7 @@ function getFollowers(id) {
   };
   // We try/catch because UrlFetchApp raises exceptions when response code != 200... grrr
   try {
-    var result = UrlFetchApp.fetch("https://api.twitter.com/1/followers/ids.json?cursor=-1&screen_name="+id, requestData);
+    var result = UrlFetchApp.fetch("https://api.twitter.com/1.1/followers/ids.json?cursor=-1&screen_name="+id, requestData);
   }
   catch(e) {
     return null;
