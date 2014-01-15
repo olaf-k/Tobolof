@@ -154,10 +154,17 @@ function main() {
   
   // If there's been a change...
   if (somethingToReport) {
+    var diffcount = '';
     // There are new followers: save their details to the db
-    if (newfollowersdetails.length > 0) db.saveBatch(newfollowersdetails, false);
+    if (newfollowersdetails.length > 0) {
+      db.saveBatch(newfollowersdetails, false);
+      diffcount += '+' + newfollowersdetails.length;
+    }
     // There are unfollowers: remove their details from the db
-    if (unfollowersdetails.length > 0) db.removeBatch(unfollowersdetails, false);
+    if (unfollowersdetails.length > 0) {
+      db.removeBatch(unfollowersdetails, false);
+      diffcount += '-' + unfollowersdetails.length;
+    }
     // Update the stored list of followers (or create it if there isn't any)
     if (storedlist) {
       storedlist.ids = currentlist.ids;
@@ -173,7 +180,7 @@ function main() {
     message.addTitle('You have ' + currentlist.ids.length + ' followers');
     MailApp.sendEmail(
       REPORT_MAIL_ADDRESS,
-      "Twitter followers update",
+      "Twitter followers update " + diffcount,
       "",
       {
         name : "Tobolof",
